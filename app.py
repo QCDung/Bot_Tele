@@ -2446,8 +2446,8 @@ async def cmd_sales(message: types.Message):
         text += f"   👤 User: {s['user_id']} (@{s['username'] or 'N/A'})\n"
         text += f"   🛍️ SP: {s['product_name']}\n"
         text += f"   💰 {s['amount']:,}đ\n"
-        if s['account_sent']:
-            text += f"   📦 Acc: <code>{s['account_sent'][:30]}...</code>\n"
+        if s.get('accounts_sent'):
+            text += f"   📦 Acc: <code>{s['accounts_sent'][:30]}...</code>\n"
         text += "\n"
     
     await message.answer(text, parse_mode=ParseMode.HTML)
@@ -2650,8 +2650,11 @@ async def callback_product(callback: types.CallbackQuery):
         return
     
     stock_count = product.get('stock_count', 0)
+    is_api_product = bool(product.get('api_product_id') and product.get('api_source') == 'canboso')
 
-    if stock_count == 0:
+    # Sản phẩm API: Canboso tự kiểm tra tồn kho khi purchase → không block ở đây
+    # Sản phẩm thường: phải có stock
+    if not is_api_product and stock_count == 0:
         await callback.message.answer("❌ <b>Hết hàng!</b>", parse_mode=ParseMode.HTML)
         return
     
@@ -2672,8 +2675,9 @@ async def callback_product(callback: types.CallbackQuery):
     description = product.get('description', '')
     desc_text = f"\n📝 <i>{description}</i>\n" if description else ""
     
-    # Nếu stock < 3: hiển thị nút bấm, >= 3: nhập số
-    if stock_count < 3:
+    # Sản phẩm API: luôn dùng text input (stock do Canboso quản lý)
+    # Sản phẩm thường stock < 3: hiển thị nút bấm; >= 3: nhập số
+    if not is_api_product and stock_count < 3:
         # Hiển thị nút bấm số lượng
         qty_buttons = []
         for i in range(1, stock_count + 1):
@@ -2699,11 +2703,14 @@ async def callback_product(callback: types.CallbackQuery):
         )
     else:
         # Lưu trạng thái chờ nhập số lượng
+        # Sản phẩm API: max_qty = api_stock (hoặc 999 nếu không có thông tin)
+        effective_max_qty = stock_count if not is_api_product else (stock_count if stock_count > 0 else 999)
         user_pending_quantity[callback.from_user.id] = {
             'product_id': product_id,
             'product_name': product['name'],
             'price': product['price'],
-            'max_qty': stock_count
+            'max_qty': effective_max_qty,
+            'is_api_product': is_api_product
         }
         
         # Keyboard hủy
@@ -2711,14 +2718,15 @@ async def callback_product(callback: types.CallbackQuery):
             [InlineKeyboardButton(text="❌ Hủy", callback_data="cancel_qty")]
         ])
         
+        stock_display = f"<b>{stock_count}</b>" if not is_api_product else (f"<b>{stock_count}</b>" if stock_count > 0 else "<b>Sẵn có</b>")
         await callback.message.answer(
             f"🛍️ <b>{product['name']}</b>\n\n"
             f"💰 Giá: <b>{product['price']:,}đ</b> / 1 sản phẩm\n"
-            f"📦 Còn: <b>{stock_count}</b> sản phẩm\n"
+            f"📦 Còn: {stock_display} sản phẩm\n"
             f"{desc_text}\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"✏️ <b>Nhập số lượng muốn mua</b> (1 - {stock_count}):\n\n"
-            f"<i>Gửi một số từ 1 đến {stock_count}</i>",
+            f"✏️ <b>Nhập số lượng muốn mua</b> (1 - {effective_max_qty}):\n\n"
+            f"<i>Gửi một số từ 1 đến {effective_max_qty}</i>",
             parse_mode=ParseMode.HTML,
             reply_markup=cancel_kb
         )
@@ -2800,7 +2808,14 @@ async def handle_quantity_input(message: types.Message):
     
     # Lấy lại product để đảm bảo data mới nhất
     product = get_product(pending['product_id'])
-    if not product or product.get('stock_count', 0) < quantity:
+    if not product:
+        await message.answer("❌ Sản phẩm không tồn tại!")
+        return
+    
+    is_api = pending.get('is_api_product', False) or bool(product.get('api_product_id') and product.get('api_source') == 'canboso')
+    
+    # Sản phẩm thường: check tồn kho; sản phẩm API: Canboso tự check khi purchase
+    if not is_api and product.get('stock_count', 0) < quantity:
         await message.answer("❌ Sản phẩm đã hết hoặc không đủ số lượng!")
         return
     
