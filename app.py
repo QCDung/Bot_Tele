@@ -1668,76 +1668,108 @@ async def process_single_transaction(tx_id: str, amount: int, content: str, raw_
 
     # ===== PHÂN NHÁNH: SẢN PHẨM API vs SẢN PHẨM THƯỜNG =====
     product_info = get_product(order.get('product_id')) if order.get('product_id') else None
-    is_api_product = product_info and product_info.get('api_product_id') and product_info.get('api_source') == 'canboso'
+    logger.info(f"   product_info api_product_id={product_info.get('api_product_id') if product_info else None}, "
+                f"api_source={product_info.get('api_source') if product_info else None}")
+    is_api_product = bool(
+        product_info
+        and product_info.get('api_product_id')
+        and str(product_info.get('api_source', '')).strip().lower() == 'canboso'
+    )
+    logger.info(f"   is_api_product={is_api_product}")
 
     if is_api_product:
         # --- CANBOSO DROPSHIP ---
-        logger.info(f"🌐 API Product: api_product_id={product_info['api_product_id']}, calling Canboso purchase...")
-        purchase_result = purchase_canboso_product(product_info['api_product_id'], quantity)
-        logger.info(f"🌐 Canboso purchase result keys: {list(purchase_result.keys()) if purchase_result else 'None'}")
+        try:
+            logger.info(f"🌐 API Product: api_product_id={product_info['api_product_id']}, calling Canboso purchase...")
+            purchase_result = purchase_canboso_product(str(product_info['api_product_id']), quantity)
+            logger.info(f"🌐 Canboso purchase result: {purchase_result}")
 
-        # Dùng hàm chuẩn để trích xuất deliveredAccounts
-        product_content = format_canboso_delivered_accounts(purchase_result) if purchase_result else None
+            # Dùng hàm chuẩn để trích xuất deliveredAccounts
+            product_content = format_canboso_delivered_accounts(purchase_result) if purchase_result else None
 
-        customer_display = (order.get('customer_name') or order.get('username') or 'N/A').strip()
-        username_display = (order.get('username') or 'N/A').strip()
-        if username_display and not username_display.startswith('@'):
-            username_display = '@' + username_display
+            customer_display = (order.get('customer_name') or order.get('username') or 'N/A').strip()
+            username_display = (order.get('username') or 'N/A').strip()
+            if username_display and not username_display.startswith('@'):
+                username_display = '@' + username_display
 
-        # Metadata từ Canboso response
-        order_code_canboso = purchase_result.get('orderCode', '') if purchase_result else ''
-        remaining_balance = purchase_result.get('balance', '') if purchase_result else ''
-        balance_info = f"\n💳 Số dư ví còn: {remaining_balance:,}đ".replace(',', '.') if remaining_balance else ''
+            # Metadata từ Canboso response (safe format - balance có thể là float)
+            order_code_canboso = purchase_result.get('orderCode', '') if purchase_result else ''
+            remaining_balance = purchase_result.get('balance', None) if purchase_result else None
+            try:
+                balance_info = f"\n💳 Số dư ví còn: {int(float(remaining_balance)):,}đ" if remaining_balance not in (None, '', 0) else ''
+            except Exception:
+                balance_info = f"\n💳 Số dư ví còn: {remaining_balance}đ" if remaining_balance else ''
 
-        if product_content:
-            send_telegram_sync(
-                order['user_id'],
-                f"🧾 <b>THANH TOÁN THÀNH CÔNG</b>\n\n"
-                f"🆔 Order ID: <code>{order['order_code']}</code>\n"
-                f"👤 Khách hàng: {customer_display} ({username_display})\n"
-                f"📦 Gói: {order.get('product_name', 'N/A')}\n"
-                f"🔢 Số lượng: {quantity}\n"
-                f"💰 Tổng thanh toán: {amount:,}đ\n\n"
-                f"📋 <b>TÀI KHOẢN ĐÃ GIAO:</b>\n"
-                f"<code>{product_content}</code>\n\n"
-                f"Cảm ơn bạn đã mua hàng! 🙏"
-            )
-            for admin_id in ADMIN_IDS:
+            if product_content:
                 send_telegram_sync(
-                    admin_id,
-                    f"💰 <b>ĐƠN HÀNG API THÀNH CÔNG</b>\n\n"
-                    f"🆔 Order: <code>{order['order_code']}</code>\n"
-                    f"🏷 Canboso Order: <code>{order_code_canboso}</code>\n"
-                    f"👤 User: {order['user_id']} ({username_display})\n"
+                    order['user_id'],
+                    f"🧾 <b>THANH TOÁN THÀNH CÔNG</b>\n\n"
+                    f"🆔 Order ID: <code>{order['order_code']}</code>\n"
+                    f"👤 Khách hàng: {customer_display} ({username_display})\n"
                     f"📦 Gói: {order.get('product_name', 'N/A')}\n"
-                    f"💰 Tổng: {amount:,}đ{balance_info}\n"
-                    f"🌐 Nguồn: Canboso API"
+                    f"🔢 Số lượng: {quantity}\n"
+                    f"💰 Tổng thanh toán: {amount:,}đ\n\n"
+                    f"📋 <b>TÀI KHOẢN ĐÃ GIAO:</b>\n"
+                    f"<code>{product_content}</code>\n\n"
+                    f"Cảm ơn bạn đã mua hàng! 🙏"
                 )
-        else:
-            # Mua API thất bại – lấy message lỗi
-            if purchase_result:
-                error_msg = (purchase_result.get('message') or
-                             purchase_result.get('error') or
-                             purchase_result.get('msg') or 'Lỗi không xác định')
+                for admin_id in ADMIN_IDS:
+                    send_telegram_sync(
+                        admin_id,
+                        f"💰 <b>ĐƠN HÀNG API THÀNH CÔNG</b>\n\n"
+                        f"🆔 Order: <code>{order['order_code']}</code>\n"
+                        f"🏷 Canboso Order: <code>{order_code_canboso}</code>\n"
+                        f"👤 User: {order['user_id']} ({username_display})\n"
+                        f"📦 Gói: {order.get('product_name', 'N/A')}\n"
+                        f"💰 Tổng: {amount:,}đ{balance_info}\n"
+                        f"🌐 Nguồn: Canboso API"
+                    )
             else:
-                error_msg = 'Không nhận được response từ API'
+                # Mua API thất bại – lấy message lỗi
+                if purchase_result:
+                    error_msg = (purchase_result.get('message') or
+                                 purchase_result.get('error') or
+                                 purchase_result.get('msg') or 'Lỗi không xác định')
+                else:
+                    error_msg = 'Không nhận được response từ API'
 
+                send_telegram_sync(
+                    order['user_id'],
+                    f"⚠️ <b>THANH TOÁN NHẬN ĐƯỢC NHƯNG LỖI GIAO HÀNG</b>\n\n"
+                    f"Đơn: <code>{order['order_code']}</code>\n"
+                    f"Lỗi: {error_msg}\n\n"
+                    f"Admin sẽ liên hệ giao hàng thủ công. Xin lỗi vì sự bất tiện! 🙏"
+                )
+                for admin_id in ADMIN_IDS:
+                    send_telegram_sync(
+                        admin_id,
+                        f"🚨 <b>LỖI CANBOSO PURCHASE</b>\n\n"
+                        f"Đơn: <code>{order['order_code']}</code>\n"
+                        f"User: {order['user_id']} ({username_display})\n"
+                        f"Sản phẩm: {order.get('product_name', 'N/A')}\n"
+                        f"Tiền: {amount:,}đ\n"
+                        f"Lỗi: {error_msg}\n"
+                        f"Raw: {str(purchase_result)[:300]}\n\n"
+                        f"⚠️ Cần giao hàng thủ công!"
+                    )
+
+        except Exception as api_err:
+            logger.error(f"💥 CANBOSO PURCHASE EXCEPTION: {api_err}", exc_info=True)
             send_telegram_sync(
                 order['user_id'],
-                f"⚠️ <b>THANH TOÁN NHẬN ĐƯỢC NHƯNG LỖI GIAO HÀNG</b>\n\n"
+                f"⚠️ <b>THANH TOÁN NHẬN ĐƯỢC NHƯNG LỖI HỆ THỐNG</b>\n\n"
                 f"Đơn: <code>{order['order_code']}</code>\n"
-                f"Lỗi: {error_msg}\n\n"
-                f"Admin sẽ liên hệ giao hàng thủ công. Xin lỗi vì sự bất tiện! 🙏"
+                f"Lỗi kỹ thuật - Admin sẽ giao hàng thủ công. Xin lỗi! 🙏"
             )
             for admin_id in ADMIN_IDS:
                 send_telegram_sync(
                     admin_id,
-                    f"🚨 <b>LỖI CANBOSO PURCHASE</b>\n\n"
+                    f"💥 <b>EXCEPTION CANBOSO PURCHASE</b>\n\n"
                     f"Đơn: <code>{order['order_code']}</code>\n"
-                    f"User: {order['user_id']} ({username_display})\n"
+                    f"User: {order['user_id']}\n"
                     f"Sản phẩm: {order.get('product_name', 'N/A')}\n"
                     f"Tiền: {amount:,}đ\n"
-                    f"Lỗi: {error_msg}\n\n"
+                    f"Exception: {str(api_err)[:400]}\n\n"
                     f"⚠️ Cần giao hàng thủ công!"
                 )
 
@@ -1754,11 +1786,10 @@ async def process_single_transaction(tx_id: str, amount: int, content: str, raw_
 
 
     # --- SẢN PHẨM THƯỜNG: lấy từ kho stocks ---
-    # Lấy hàng từ kho (theo product_id và quantity) - lưu order_code và user_id để track
     stocks = get_available_stock(order.get('product_id'), order['order_code'], order['user_id'], quantity)
-    
 
     if stocks and len(stocks) > 0:
+
         # GỬI SẢN PHẨM CHO ĐÚNG NGƯỜI TẠO ĐƠN
         logger.info(f"📦 Sending {len(stocks)} products to user {order['user_id']}")
         
